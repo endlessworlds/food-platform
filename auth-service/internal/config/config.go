@@ -36,6 +36,8 @@ type Config struct {
 
 	RateLimitAuthRPM   int
 	RateLimitPublicRPM int
+
+	UserServiceURL string
 }
 
 // Load reads environment variables (from .env in dev, from real env in prod).
@@ -72,6 +74,8 @@ func Load() *Config {
 
 		RateLimitAuthRPM:   authRPM,
 		RateLimitPublicRPM: pubRPM,
+
+		UserServiceURL: getEnv("USER_SERVICE_URL", ""),
 	}
 }
 

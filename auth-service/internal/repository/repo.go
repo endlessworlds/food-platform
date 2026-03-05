@@ -15,6 +15,7 @@ type AuthRepository interface {
 	FindUserByEmail(email string) (*models.User, error)
 	FindUserByID(id uint) (*models.User, error)
 	FindUserByPhone(phone string) (*models.User, error)
+	DeleteUser(id uint) error
 
 	CreateOTP(otp *models.OTP) error
 	FindValidOTP(phone, code string) (*models.OTP, error)
@@ -61,6 +62,10 @@ func (r *authRepository) FindUserByPhone(phone string) (*models.User, error) {
 		return nil, nil
 	}
 	return &user, err
+}
+
+func (r *authRepository) DeleteUser(id uint) error {
+	return r.db.Delete(&models.User{}, id).Error
 }
 
 // ─── OTP operations ───────────────────────────────────────────────────────────

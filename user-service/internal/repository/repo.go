@@ -17,6 +17,7 @@ type ProfileRepository interface {
 	Create(p *models.Profile) error
 	Update(p *models.Profile) error
 	SoftDelete(id uint) error
+	HardDeleteByAuthID(authID uint) error
 }
 
 type AddressRepository interface {
@@ -26,6 +27,7 @@ type AddressRepository interface {
 	Update(a *models.Address) error
 	Delete(id uint) error
 	ClearDefault(userID uint) error
+	DeleteAllByUserID(userID uint) error
 }
 
 // ────────────────────────────────────────────────────────────
@@ -64,6 +66,12 @@ func (r *profileRepo) Update(p *models.Profile) error {
 
 func (r *profileRepo) SoftDelete(id uint) error {
 	return r.db.Delete(&models.Profile{}, id).Error
+}
+
+// HardDeleteByAuthID permanently removes the profile row, bypassing soft-delete.
+// Called by the internal endpoint when auth-service deletes a user account.
+func (r *profileRepo) HardDeleteByAuthID(authID uint) error {
+	return r.db.Unscoped().Where("auth_id = ?", authID).Delete(&models.Profile{}).Error
 }
 
 // ────────────────────────────────────────────────────────────
@@ -106,4 +114,10 @@ func (r *addressRepo) ClearDefault(userID uint) error {
 	return r.db.Model(&models.Address{}).
 		Where("user_id = ? AND is_default = true", userID).
 		Update("is_default", false).Error
+}
+
+// DeleteAllByUserID removes all addresses for a profile (hard delete).
+// Called during full account deletion so no orphaned address rows remain.
+func (r *addressRepo) DeleteAllByUserID(userID uint) error {
+	return r.db.Where("user_id = ?", userID).Delete(&models.Address{}).Error
 }

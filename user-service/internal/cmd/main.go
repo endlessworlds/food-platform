@@ -43,7 +43,7 @@ func main() {
 	addressRepo := repository.NewAddressRepository(db)
 
 	// ── Services ──────────────────────────────────────────────
-	profileSvc := service.NewProfileService(profileRepo)
+	profileSvc := service.NewProfileService(profileRepo, addressRepo)
 	addressSvc := service.NewAddressService(addressRepo, profileRepo)
 
 	// ── Handlers ──────────────────────────────────────────────
@@ -64,10 +64,13 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{"service": "user-service", "status": "ok"})
 	})
 
-	// ── Internal route — no JWT, Docker-network only ──────────
+	// ── Internal routes — no JWT, Docker-network only ─────────
 	// Called by auth-service immediately after registration to
 	// create the profile row in user_db.
 	v1.POST("/internal/users/ensure", profileH.EnsureProfile)
+	// Called by auth-service when a user account is deleted to
+	// remove the profile and all associated addresses.
+	v1.DELETE("/internal/users/:authId", profileH.DeleteAccount)
 
 	// ── Protected routes ──────────────────────────────────────
 	auth := middleware.Auth(cfg.JWTSecret)

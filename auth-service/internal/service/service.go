@@ -1,10 +1,13 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand"
+	"net/http"
 	"strconv"
 	"time"
 
@@ -43,18 +46,20 @@ type AuthService interface {
 	Login(req *models.LoginRequest) (*models.AuthResponse, error)
 	RefreshToken(refreshToken string) (*models.AuthResponse, error)
 	Logout(userID uint, refreshToken string) error
+	DeleteAccount(userID uint) error
 	SendOTP(phone string) error
 	VerifyOTP(phone, code string) (*models.AuthResponse, error)
 }
 
 type authService struct {
-	repo   repository.AuthRepository
-	redis  *redis.Client
-	cfg    *config.Config
+	repo       repository.AuthRepository
+	redis      *redis.Client
+	cfg        *config.Config
+	userSvcURL string
 }
 
 func New(repo repository.AuthRepository, rdb *redis.Client, cfg *config.Config) AuthService {
-	return &authService{repo: repo, redis: rdb, cfg: cfg}
+	return &authService{repo: repo, redis: rdb, cfg: cfg, userSvcURL: cfg.UserServiceURL}
 }
 
 // ─── Register ─────────────────────────────────────────────────────────────────
@@ -97,6 +102,13 @@ func (s *authService) Register(req *models.RegisterRequest) (*models.AuthRespons
 	}
 	if err := s.repo.CreateUser(user); err != nil {
 		return nil, err
+	}
+
+	// Asynchronously ensure a profile exists in user-service.
+	// Failures are non-fatal: the internal /ensure endpoint is idempotent and
+	// the profile can be auto-created on the user's first login as a fallback.
+	if s.userSvcURL != "" {
+		go s.ensureUserProfile(user.ID, req.Name)
 	}
 
 	return s.buildAuthResponse(user)
@@ -197,7 +209,85 @@ func (s *authService) VerifyOTP(phone, code string) (*models.AuthResponse, error
 	return s.buildAuthResponse(user)
 }
 
+// ─── Delete Account ───────────────────────────────────────────────────────────
+
+// DeleteAccount permanently removes a user from auth_db, revokes their refresh
+// token from Redis, and instructs user-service to delete the linked profile and
+// addresses.  The auth record is deleted first; the user-service call is best-
+// effort — a failure is logged but does not roll back the auth deletion, since
+// the account is already unusable without valid credentials.
+func (s *authService) DeleteAccount(userID uint) error {
+	user, err := s.repo.FindUserByID(userID)
+	if err != nil {
+		return err
+	}
+	if user == nil {
+		return ErrUserNotFound
+	}
+
+	// Delete from auth DB.
+	if err := s.repo.DeleteUser(userID); err != nil {
+		return err
+	}
+
+	// Revoke refresh token.
+	ctx := context.Background()
+	s.redis.Del(ctx, s.refreshKey(userID)) //nolint:errcheck
+
+	// Propagate deletion to user-service (best-effort).
+	if s.userSvcURL != "" {
+		s.deleteUserProfile(userID)
+	}
+
+	return nil
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+// ensureUserProfile calls user-service to create the profile row right after
+// registration.  Intended to be called in a goroutine (fire-and-forget).
+func (s *authService) ensureUserProfile(userID uint, name string) {
+	body, err := json.Marshal(map[string]interface{}{
+		"auth_id": userID,
+		"name":    name,
+	})
+	if err != nil {
+		fmt.Printf("[auth-service] ensureUserProfile: failed to marshal request for user %d: %v\n", userID, err)
+		return
+	}
+	url := fmt.Sprintf("%s/api/v1/internal/users/ensure", s.userSvcURL)
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		fmt.Printf("[auth-service] ensureUserProfile: failed to build request: %v\n", err)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Printf("[auth-service] ensureUserProfile: HTTP error for user %d: %v\n", userID, err)
+		return
+	}
+	defer resp.Body.Close()
+}
+
+// deleteUserProfile calls user-service to remove the profile and all addresses
+// for the given auth user.  Failures are only logged.
+func (s *authService) deleteUserProfile(userID uint) {
+	url := fmt.Sprintf("%s/api/v1/internal/users/%d", s.userSvcURL, userID)
+	req, err := http.NewRequest(http.MethodDelete, url, nil)
+	if err != nil {
+		fmt.Printf("[auth-service] deleteUserProfile: failed to build request: %v\n", err)
+		return
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Printf("[auth-service] deleteUserProfile: HTTP error for user %d: %v\n", userID, err)
+		return
+	}
+	defer resp.Body.Close()
+}
 
 // buildAuthResponse generates a fresh access + refresh token pair and persists
 // the refresh token to Redis.

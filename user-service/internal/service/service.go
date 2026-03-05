@@ -22,14 +22,16 @@ type ProfileService interface {
 	GetProfile(authID uint, callerID uint, callerRole string) (*models.Profile, error)
 	UpdateProfile(authID uint, callerID uint, callerRole string, req *models.UpdateProfileRequest) (*models.Profile, error)
 	DeleteProfile(authID uint, callerID uint, callerRole string) error
+	DeleteAccount(authID uint) error
 }
 
 type profileService struct {
 	profileRepo repository.ProfileRepository
+	addressRepo repository.AddressRepository
 }
 
-func NewProfileService(pr repository.ProfileRepository) ProfileService {
-	return &profileService{profileRepo: pr}
+func NewProfileService(pr repository.ProfileRepository, ar repository.AddressRepository) ProfileService {
+	return &profileService{profileRepo: pr, addressRepo: ar}
 }
 
 // EnsureProfile creates a profile if one does not exist for this authID.
@@ -101,6 +103,27 @@ func (s *profileService) DeleteProfile(authID uint, callerID uint, callerRole st
 		return ErrForbidden
 	}
 	return s.profileRepo.SoftDelete(p.ID)
+}
+
+// DeleteAccount permanently removes the profile and all its addresses.
+// Called by the internal endpoint when auth-service deletes a user account.
+// Addresses are deleted explicitly before the profile as defense-in-depth:
+// the FK CASCADE migration (000003) handles it at the DB level, but AutoMigrate
+// does not apply that constraint, so this code ensures correctness in all envs.
+func (s *profileService) DeleteAccount(authID uint) error {
+	p, err := s.profileRepo.GetByAuthID(authID)
+	if err != nil {
+		return err
+	}
+	if p == nil {
+		// Profile may not exist (e.g. registration failed mid-way) — treat as success.
+		return nil
+	}
+	// Delete addresses first, then hard-delete the profile.
+	if err := s.addressRepo.DeleteAllByUserID(p.ID); err != nil {
+		return err
+	}
+	return s.profileRepo.HardDeleteByAuthID(authID)
 }
 
 // ────────────────────────────────────────────────────────────

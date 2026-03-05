@@ -118,6 +118,20 @@ func (h *ProfileHandler) DeleteProfile(c *gin.Context) {
 	c.JSON(http.StatusOK, models.MessageResponse{Message: "account deleted"})
 }
 
+// DELETE /api/v1/internal/users/:authId — called by auth-service (no JWT, internal network only)
+func (h *ProfileHandler) DeleteAccount(c *gin.Context) {
+	authID, err := paramUint(c, "authId")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "invalid auth id"})
+		return
+	}
+	if err := h.svc.DeleteAccount(authID); err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: "could not delete account"})
+		return
+	}
+	c.JSON(http.StatusOK, models.MessageResponse{Message: "account deleted"})
+}
+
 // ────────────────────────────────────────────────────────────
 // Address handlers
 // ────────────────────────────────────────────────────────────

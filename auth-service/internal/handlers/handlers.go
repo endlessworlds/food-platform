@@ -27,6 +27,7 @@ func (h *AuthHandler) RegisterRoutes(rg *gin.RouterGroup, jwtSecret string) {
 	rg.POST("/login",       h.Login)
 	rg.POST("/refresh",     h.Refresh)
 	rg.POST("/logout",     middleware.JWTAuth(jwtSecret), h.Logout)  // JWT applied here
+	rg.DELETE("/users/me", middleware.JWTAuth(jwtSecret), h.DeleteAccount)
 	rg.POST("/otp/send",    h.SendOTP)
 	rg.POST("/otp/verify",  h.VerifyOTP)
 	rg.GET("/health",       h.Health)
@@ -188,4 +189,26 @@ func (h *AuthHandler) Health(c *gin.Context) {
 		Status:  "ok",
 		Uptime:  time.Since(h.startTime).String(),
 	})
+}
+
+// ─── DELETE /api/v1/auth/users/me ─────────────────────────────────────────────
+
+func (h *AuthHandler) DeleteAccount(c *gin.Context) {
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, models.ErrorResponse{Error: "unauthorized"})
+		return
+	}
+
+	if err := h.svc.DeleteAccount(userID.(uint)); err != nil {
+		switch err {
+		case service.ErrUserNotFound:
+			c.JSON(http.StatusNotFound, models.ErrorResponse{Error: "user_not_found"})
+		default:
+			c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: "internal_server_error"})
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, models.SuccessResponse{Message: "account deleted successfully"})
 }
